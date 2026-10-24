@@ -1,0 +1,343 @@
+<!DOCTYPE html><html lang="ja"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>コリドー シミュレーター</title>
+<style>
+:root{box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px);--bg:#f5f3ee;--fg:#222;--cell:#e4dccb;--wall:#8a5a2b;--b:#2f6fdb;--r:#d94a4a;--card:#fff;--line:#cfc6b2}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#1c1b19;--fg:#eee;--cell:#3a362e;--wall:#d9a35f;--card:#2a2824;--line:#4a453a}}
+:root[data-theme="dark"]{--bg:#1c1b19;--fg:#eee;--cell:#3a362e;--wall:#d9a35f;--card:#2a2824;--line:#4a453a}
+html,body{height:auto}body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.5 -apple-system,"Hiragino Sans",sans-serif}
+#app{max-width:540px;margin:0 auto;padding:10px}
+h1{font-size:18px;margin:4px 0 8px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:8px 10px;margin:8px 0}
+button,select,input{font:inherit;color:inherit;background:var(--card);border:1px solid var(--line);border-radius:8px;padding:6px 10px;margin:2px}
+button.on{background:var(--wall);color:#fff;border-color:var(--wall)}
+input[type=number]{width:56px}
+.b{color:var(--b);font-weight:700}.r{color:var(--r);font-weight:700}
+</style></head><body><div id="app"></div>
+<script>
+const N=9,D=[[-1,0],[1,0],[0,-1],[0,1]],NM=['青','赤'];
+const grid=()=>Array.from({length:8},()=>Array(8).fill(false));
+const PRE={std:[[0,8,4],[1,0,4]],b2:[[0,8,3],[0,8,5],[1,0,4]],r2:[[0,8,4],[1,0,3],[1,0,5]]};
+let S,hist=[],start,mode='play',tool='move',sel=null,ghost=null,ai=[false,false],timer=null;
+function mk(pre){return{pawns:PRE[pre].map(([p,r,c])=>({p,r,c})),hw:grid(),vw:grid(),walls:[10,10],turn:0,win:null}}
+S=mk('std');start=JSON.stringify(S);
+const inb=(r,c)=>r>=0&&r<9&&c>=0&&c<9;
+const H=(s,r,c)=>r>=0&&r<8&&c>=0&&c<8&&s.hw[r][c];
+const V=(s,r,c)=>r>=0&&r<8&&c>=0&&c<8&&s.vw[r][c];
+function blocked(s,r,c,dr,dc){
+ if(dr==1)return H(s,r,c)||H(s,r,c-1);
+ if(dr==-1)return H(s,r-1,c)||H(s,r-1,c-1);
+ if(dc==1)return V(s,r,c)||V(s,r-1,c);
+ return V(s,r,c-1)||V(s,r-1,c-1)}
+const occ=(s,r,c)=>s.pawns.some(p=>p.r==r&&p.c==c);
+function moves(s,p){const o=[];
+ for(const[dr,dc]of D){if(blocked(s,p.r,p.c,dr,dc))continue;const r=p.r+dr,c=p.c+dc;if(!inb(r,c))continue;
+  if(!occ(s,r,c)){o.push([r,c]);continue}
+  const r2=r+dr,c2=c+dc;
+  if(inb(r2,c2)&&!blocked(s,r,c,dr,dc)&&!occ(s,r2,c2)){o.push([r2,c2]);continue}
+  for(const[a,b]of D){if(a*dr+b*dc!==0)continue;
+   if(!blocked(s,r,c,a,b)&&inb(r+a,c+b)&&!occ(s,r+a,c+b))o.push([r+a,c+b])}}
+ return o}
+function dist(s,pl){const g=pl?8:0,d=Array(81).fill(-1),q=[];
+ for(const p of s.pawns)if(p.p==pl){d[p.r*9+p.c]=0;q.push([p.r,p.c])}
+ for(let i=0;i<q.length;i++){const[r,c]=q[i];if(r==g)return d[r*9+c];
+  for(const[dr,dc]of D){const a=r+dr,b=c+dc;if(!inb(a,b)||blocked(s,r,c,dr,dc)||d[a*9+b]>=0)continue;d[a*9+b]=d[r*9+c]+1;q.push([a,b])}}
+ return 99}
+const has=(s,pl)=>s.pawns.some(p=>p.p==pl);
+const pathOK=s=>[0,1].every(pl=>{if(!has(s,pl))return true;const d=gmap(s,pl);return s.pawns.every(p=>p.p!=pl||d[p.r*9+p.c]<99)});
+function wallOK(s,t,r,c){if(r<0||r>7||c<0||c>7)return false;
+ const A=t=='h'?s.hw:s.vw,B=t=='h'?s.vw:s.hw;
+ if(A[r][c]||B[r][c])return false;
+ if(t=='h'){if((c>0&&A[r][c-1])||(c<7&&A[r][c+1]))return false}
+ else if((r>0&&A[r-1][c])||(r<7&&A[r+1][c]))return false;
+ return true}
+function legal(s,t,r,c){if(!wallOK(s,t,r,c))return false;const A=t=='h'?s.hw:s.vw;A[r][c]=true;const ok=pathOK(s);A[r][c]=false;return ok}
+let aiDepth=3,W={wall:.2,prog:1.1,tempo:.5,fwd:.3,back:.8,rep:1.5,learn:1.5,margin:0,side:0,stall:1.2};
+function gmap(s,pl){const g=pl?8:0,d=Array(81).fill(99),q=[];for(let c=0;c<9;c++){d[g*9+c]=0;q.push(g*9+c)}
+ for(let i=0;i<q.length;i++){const r=(q[i]/9)|0,c=q[i]%9;for(const[dr,dc]of D){const a=r+dr,b=c+dc;if(!inb(a,b)||blocked(s,r,c,dr,dc)||d[a*9+b]<99)continue;d[a*9+b]=d[q[i]]+1;q.push(a*9+b)}}return d}
+function wallCands(s){const t=s.turn,o=1-t,out=[],seen=new Set();if(s.walls[t]<=0)return out;
+ const d=gmap(s,o);let p=null,bd=99;for(const q of s.pawns)if(q.p==o&&d[q.r*9+q.c]<bd){bd=d[q.r*9+q.c];p=q}
+ if(!p)return out;let r=p.r,c=p.c;
+ for(let i=0;i<8&&d[r*9+c]>0;i++){let nr=-1,nc=-1;
+  for(const[dr,dc]of D){const a=r+dr,b=c+dc;if(inb(a,b)&&!blocked(s,r,c,dr,dc)&&d[a*9+b]==d[r*9+c]-1){nr=a;nc=b;break}}
+  if(nr<0)break;
+  const add=(wt,wr,wc)=>{const k=wt+wr+','+wc;if(!seen.has(k)&&wallOK(s,wt,wr,wc)){seen.add(k);out.push({k:'w',t:wt,r:wr,c:wc})}};
+  if(nr!=r){const m=Math.min(r,nr);add('h',m,c);add('h',m,c-1)}else{const m=Math.min(c,nc);add('v',r,m);add('v',r-1,m)}
+  r=nr;c=nc}
+ return out}
+function genAI(s){const t=s.turn,d=gmap(s,t),ms=[];
+ s.pawns.forEach(p=>{if(p.p==t)for(const[r,c]of moves(s,p))ms.push({k:'m',p,r,c,v:d[r*9+c]})});
+ ms.sort((a,b)=>a.v-b.v);return ms.concat(wallCands(s))}
+const evS=(s,R)=>(dist(s,1-R)-W.prog*dist(s,R))+(s.turn==R?W.tempo:-W.tempo)+W.wall*(s.walls[R]-s.walls[1-R])+Math.random()*.01;
+function val(s,m,d,al,be,R){const t=s.turn,mx=t==R;let v;
+ if(m.k=='m'){const or=m.p.r,oc=m.p.c;m.p.r=m.r;m.p.c=m.c;
+  if(m.r==(t?8:0))v=mx?1000+d:-1000-d;else{s.turn=1-t;v=ab(s,d,al,be,R);s.turn=t}
+  m.p.r=or;m.p.c=oc;return v}
+ const A=m.t=='h'?s.hw:s.vw;A[m.r][m.c]=true;
+ if(!pathOK(s)){A[m.r][m.c]=false;return null}
+ s.walls[t]--;s.turn=1-t;v=ab(s,d,al,be,R);s.turn=t;s.walls[t]++;A[m.r][m.c]=false;return v}
+function ab(s,d,al,be,R){if(d==0)return evS(s,R);const mx=s.turn==R;let best=mx?-1e9:1e9;
+ for(const m of genAI(s)){const v=val(s,m,d-1,al,be,R);if(v==null)continue;
+  if(mx){if(v>best)best=v;if(best>al)al=best}else{if(v<best)best=v;if(best<be)be=best}
+  if(al>=be)break}
+ return Math.abs(best)>1e8?evS(s,R):best}
+function aiPick(s,sn=seen){const me=s.turn,sk=skey(s),gm=gmap(s,me),L=[];let bv=-1e9;
+ for(const m of genAI(s)){let bn=0;const e=stat(sk,mkey(s,m));if(e)bn=W.learn*((e[1]+1)/(e[0]+2)-.5)*2*Math.min(1,e[0]/4);
+  bn-=W.rep*(sn.get(ckey(s,m))||0);
+  const dl=m.k=='m'?gm[m.p.r*9+m.p.c]-gm[m.r*9+m.c]:null;
+  if(dl!=null)bn+=dl>0?W.fwd*dl:-(dl<0?W.back:W.side)-W.stall*((s.st&&s.st[me])||0);
+  const v0=val(s,m,aiDepth-1,bv-W.margin-bn,1e9,me);if(v0==null)continue;const v=v0+bn;L.push({m,v,dl});if(v>bv)bv=v}
+ const C=L.filter(x=>x.v>=bv-W.margin);
+ if(W.margin>0){const fw=C.filter(x=>x.dl>0).sort((a,b)=>b.dl-a.dl||b.v-a.v);if(fw.length)return fw[0].m}
+ return C.sort((a,b)=>b.v-a.v)[0].m}
+function push(){hist.push(JSON.stringify(S))}
+function doMove(p,r,c){push();recM(S,{k:'m',p,r,c});updSt(S,{k:'m',p,r,c});p.r=r;p.c=c;if(r==(p.p?8:0)){S.win=p.p;endRec()}else S.turn=1-S.turn;noteSeen();sel=null;ghost=null;render()}
+function doWall(t,r,c){push();recM(S,{k:'w',t,r,c});updSt(S,{k:'w'});(t=='h'?S.hw:S.vw)[r][c]=S.turn+1;S.walls[S.turn]--;S.turn=1-S.turn;noteSeen();sel=null;ghost=null;render()}
+function apply(m){if(!m)return;m.k=='m'?doMove(m.p,m.r,m.c):doWall(m.t,m.r,m.c)}
+function sched(){clearTimeout(timer);if(mode=='play'&&!S.win&&ai[S.turn])timer=setTimeout(()=>apply(aiPick(S)),450);if(autoAn&&!an&&mode=='play'&&S.win==null&&!ai[S.turn])setTimeout(startAn,0)}
+function onBoard(e){const rc=document.getElementById('bd').getBoundingClientRect();
+ const x=(e.clientX-rc.left)/rc.width*440,y=(e.clientY-rc.top)/rc.height*440,cl=(v,m)=>Math.min(m,Math.max(0,v));
+ if(tool=='wallH'||tool=='wallV')wallTap(tool=='wallH'?'h':'v',cl(Math.round((y-45)/50),7),cl(Math.round((x-45)/50),7));
+ else cellTap(cl(Math.floor(y/50),8),cl(Math.floor(x/50),8))}
+function cellTap(r,c){
+ if(mode=='edit'){const i=S.pawns.findIndex(p=>p.r==r&&p.c==c);if(i>=0)S.pawns.splice(i,1);else S.pawns.push({p:tool=='pawn1'?1:0,r,c});render();return}
+ if(S.win||ai[S.turn])return;
+ const p=S.pawns.find(p=>p.r==r&&p.c==c);
+ if(p&&p.p==S.turn){sel=sel===p?null:p}
+ else if(sel&&moves(S,sel).some(([a,b])=>a==r&&b==c))return doMove(sel,r,c);
+ render()}
+function wallTap(t,r,c){
+ if(mode=='edit'){const A=t=='h'?S.hw:S.vw;if(A[r][c])A[r][c]=false;else if(legal(S,t,r,c))A[r][c]=wo+1;render();return}
+ if(S.win||ai[S.turn]||S.walls[S.turn]<=0)return;
+ if(ghost&&ghost.t==t&&ghost.r==r&&ghost.c==c&&legal(S,t,r,c))return doWall(t,r,c);
+ ghost={t,r,c};render()}
+const setTool=t=>{tool=t;sel=null;ghost=null;render()};
+function setMode(m){if(m=='play'&&!pathOK(S)){note='⚠ ゴールに到達できないコマがあります。壁を調整してください。';render();return}note='';mode=m;clearTimeout(timer);sel=null;ghost=null;tool=m=='edit'?'pawn0':'move';
+ if(m=='play'){S.win=null;S.pawns.forEach(p=>{if(p.r==(p.p?8:0))S.win=p.p});hist=[];start=JSON.stringify(S)}render()}
+function undo(){if(!hist.length)return;trace=[];ai=[false,false];clearTimeout(timer);S=JSON.parse(hist.pop());rebuildSeen();sel=null;ghost=null;render()}
+function reset(){ai=[false,false];S=JSON.parse(start);hist=[];sel=null;ghost=null;render()}
+function preset(k){S=mk(k);render()}
+function clearAll(){S.pawns=[];S.hw=grid();S.vw=grid();render()}
+const WR=(t,r,c,f,o)=>t=='h'?`<rect x="${c*50}" y="${r*50+40}" width="90" height="10" rx="3" style="fill:${f}" stroke="#0006" stroke-width=".8" opacity="${o}"/>`:`<rect x="${c*50+40}" y="${r*50}" width="10" height="90" rx="3" style="fill:${f}" stroke="#0006" stroke-width=".8" opacity="${o}"/>`;
+const wcol=v=>v===1?'var(--b)':v===2?'var(--r)':'var(--wall)';
+function board(){let h=`<svg id="bd" viewBox="0 0 440 440" onclick="onBoard(event)" style="width:100%;touch-action:manipulation;display:block">`;
+ for(let r=0;r<9;r++)for(let c=0;c<9;c++){h+=`<rect x="${c*50}" y="${r*50}" width="40" height="40" rx="5" style="fill:var(--cell)"/>`;
+  if(r==0)h+=`<rect x="${c*50}" y="0" width="40" height="40" rx="5" fill="#2f6fdb" opacity=".22"/>`;
+  if(r==8)h+=`<rect x="${c*50}" y="400" width="40" height="40" rx="5" fill="#d94a4a" opacity=".22"/>`}
+ for(let r=0;r<8;r++)for(let c=0;c<8;c++){if(S.hw[r][c])h+=WR('h',r,c,wcol(S.hw[r][c]),1);if(S.vw[r][c])h+=WR('v',r,c,wcol(S.vw[r][c]),1)}
+ if(ghost)h+=WR(ghost.t,ghost.r,ghost.c,legal(S,ghost.t,ghost.r,ghost.c)?wcol(S.turn+1):'#888',.6);
+ if(prev&&an){if(prev.k=='w')h+=WR(prev.t,prev.r,prev.c,'#f5b800',.9);else{const q=S.pawns[prev.pi];h+=`<rect x="${prev.c*50}" y="${prev.r*50}" width="40" height="40" rx="5" fill="none" stroke="#f5b800" stroke-width="4"/><rect x="${q.c*50}" y="${q.r*50}" width="40" height="40" rx="5" fill="none" stroke="#f5b800" stroke-width="2" stroke-dasharray="4"/>`}}
+ if(mode=='play'&&sel)for(const[r,c]of moves(S,sel))h+=`<circle cx="${c*50+20}" cy="${r*50+20}" r="9" fill="#3cb371" opacity=".85"/>`;
+ if(kd&&mode=='play'&&sel&&kd[2]===sel)h+=`<circle cx="${kd[1]*50+20}" cy="${kd[0]*50+20}" r="14" fill="none" stroke="#f5b800" stroke-width="4"/>`;
+ for(const p of S.pawns){const cur=mode=='play'&&!S.win&&p.p==S.turn;
+  h+=`<circle cx="${p.c*50+20}" cy="${p.r*50+20}" r="15" style="fill:var(${p.p?'--r':'--b'})" stroke="${p===sel?'#fc0':cur?'#fff':'#0004'}" stroke-width="${p===sel?4:2}"/>`}
+ return h+'</svg>'}
+function render(){
+ if(an&&an.key!==JSON.stringify(S)){an.run=false;an=null}if(!an)prev=null;if(!hist.length){trace=[];seen=new Map([[skey(S),1]])}
+ const d=[0,1].map(i=>has(S,i)?dist(S,i):'—');
+ const st=S.win!=null?`<b class="${S.win?'r':'b'}">${NM[S.win]}の勝ち！</b>`:`<b class="${S.turn?'r':'b'}">${NM[S.turn]}の番</b>`;
+ const tb=(t,l)=>`<button class="${tool==t?'on':''}" onclick="setTool('${t}')">${l}</button>`;
+ let ui;
+ if(mode=='play')ui=`<div class="card">${tb('move','コマ移動')}${tb('wallH','壁 ー横')}${tb('wallV','壁 |縦')}<br>
+  <button onclick="undo()">↩ 戻す</button><button onclick="reset()">最初から</button><button onclick="apply(aiPick(S))">AI 1手</button><button onclick="setMode('edit')">⚙ 配置編集</button><br>
+  <label><input type="checkbox" ${ai[0]?'checked':''} onchange="ai[0]=this.checked;sched()"> 青をAI</label>
+  <label><input type="checkbox" ${ai[1]?'checked':''} onchange="ai[1]=this.checked;sched()"> 赤をAI</label> <select onchange="aiDepth=+this.value">${[[1,'AI:弱'],[2,'AI:中'],[3,'AI:強'],[4,'AI:最強']].map(([v,l])=>`<option value="${v}" ${v==aiDepth?'selected':''}>${l}</option>`).join('')}</select>
+  <div style="font-size:12px;opacity:.7">壁は1回タップでプレビュー、同じ場所をもう一度タップで確定。<br>⌨ キー操作：Tab=コマ/壁の切替、WASD=移動先・壁位置の選択、R=壁の向き、Q/E=コマ切替、Space/Enter=決定、Z=戻す</div></div>`;
+ else ui=`<div class="card">${tb('pawn0','青コマ')}${tb('pawn1','赤コマ')}${tb('wallH','壁 ー横')}${tb('wallV','壁 |縦')}<br><span class="n">置く壁の持ち主：</span><button class="${wo==0?'on':''}" onclick="wo=0;render()">青</button><button class="${wo==1?'on':''}" onclick="wo=1;render()">赤</button><br>
+  <button onclick="preset('std')">標準</button><button onclick="preset('b2')">青2コマ</button><button onclick="preset('r2')">赤2コマ</button><button onclick="clearAll()">全消去</button><br>
+  <span class="b">青</span>の壁<input type="number" min="0" max="20" value="${S.walls[0]}" onchange="S.walls[0]=+this.value">
+  <span class="r">赤</span>の壁<input type="number" min="0" max="20" value="${S.walls[1]}" onchange="S.walls[1]=+this.value"><br>
+  先手 <select onchange="S.turn=+this.value"><option value="0" ${S.turn==0?'selected':''}>青</option><option value="1" ${S.turn==1?'selected':''}>赤</option></select>
+  <button class="on" onclick="setMode('play')">▶ この配置で開始</button><span style="color:#d33">${note}</span>
+  <div style="font-size:12px;opacity:.7">マスをタップでコマ追加/削除。壁は交点付近をタップで追加/削除。ゴール：青=上端、赤=下端。複数コマは、どれか1つが到達すれば勝ち。</div></div>`;
+ document.getElementById('app').innerHTML=`<h1>🧱 コリドー シミュレーター</h1>
+ <div class="card">${mode=='edit'?'<b>配置編集中</b>':st} ／ 最短手数 <span class="b">青${d[0]}</span> <span class="r">赤${d[1]}</span> ／ 残り壁 <span class="b">${S.walls[0]}</span>・<span class="r">${S.walls[1]}</span> <span class="n">（壁は置いた側の色）</span></div>${board()}${ui}${mode=='play'?anUI()+trainUI()+wUI():''}`;
+ sched()}
+// ---- 高速モンテカルロ探索 ----
+let an=null,prev=null,anTime=5,autoAn=false;
+const L='abcdefghi',cn=(r,c)=>L[c]+(9-r);
+const cl2=s=>({pawns:s.pawns.map(p=>({...p})),hw:s.hw.map(a=>a.slice()),vw:s.vw.map(a=>a.slice()),walls:s.walls.slice(),turn:s.turn,win:s.win});
+function dmap(s,pl){const g=pl?8:0,d=new Int8Array(81).fill(-1),q=[];
+ for(let c=0;c<9;c++){d[g*9+c]=0;q.push(g*9+c)}
+ for(let i=0;i<q.length;i++){const r=(q[i]/9)|0,c=q[i]%9;for(const[dr,dc]of D){const a=r+dr,b=c+dc;if(!inb(a,b)||blocked(s,r,c,dr,dc)||d[a*9+b]>=0)continue;d[a*9+b]=d[q[i]]+1;q.push(a*9+b)}}
+ return d}
+const dv=(d,p)=>d[p.r*9+p.c]<0?99:d[p.r*9+p.c];
+const dmin=(s,d,pl)=>s.pawns.reduce((m,p)=>p.p==pl?Math.min(m,dv(d,p)):m,99);
+function ap(s,m){if(m.k=='m'){const p=s.pawns[m.pi];p.r=m.r;p.c=m.c;if(m.r==(p.p?8:0)){s.win=p.p;return}}else{(m.t=='h'?s.hw:s.vw)[m.r][m.c]=true;s.walls[s.turn]--}s.turn=1-s.turn}
+function cands(s){const me=s.turn,op=1-me,o=[],w=[];
+ s.pawns.forEach((p,pi)=>{if(p.p==me)for(const[r,c]of moves(s,p))o.push({k:'m',pi,r,c})});
+ if(s.walls[me]>0)for(const t of['h','v'])for(let r=0;r<8;r++)for(let c=0;c<8;c++)if(legal(s,t,r,c)){const A=t=='h'?s.hw:s.vw;A[r][c]=true;const sc=dist(s,op)-dist(s,me);A[r][c]=false;w.push({k:'w',t,r,c,sc})}
+ w.sort((a,b)=>b.sc-a.sc);return o.concat(w.slice(0,14))}
+function playout(s0,m){const s=cl2(s0),me=s0.turn;ap(s,m);
+ for(let ply=0;ply<100&&s.win==null;ply++){
+  const t=s.turn,o=1-t,dm=dmap(s,t),my=dmin(s,dm,t),dopm=dmap(s,o),dop=dmin(s,dopm,o);
+  if(s.walls[t]>0&&Math.random()<(dop<=my?.4:.12)){
+   let bw=null,bs=0;const ops=s.pawns.filter(p=>p.p==o);
+   for(let i=0;i<5;i++){let wt,r,c;
+    if(ops.length&&Math.random()<.6){const q=ops[(Math.random()*ops.length)|0];wt='h';r=o?q.r:q.r-1;c=q.c-(Math.random()<.5?1:0)}
+    else{wt=Math.random()<.5?'h':'v';r=(Math.random()*8)|0;c=(Math.random()*8)|0}
+    if(!wallOK(s,wt,r,c))continue;const A=wt=='h'?s.hw:s.vw;A[r][c]=true;
+    const ok=pathOK(s),a=dmin(s,dmap(s,o),o),b=dmin(s,dmap(s,t),t);A[r][c]=false;
+    if(!ok||a>=99||b>=99)continue;const sc=(a-dop)-(b-my);if(sc>bs){bs=sc;bw={wt,r,c}}}
+   if(bw){(bw.wt=='h'?s.hw:s.vw)[bw.r][bw.c]=true;s.walls[t]--;s.turn=o;continue}}
+  const mv=[];s.pawns.forEach((p,pi)=>{if(p.p==t)for(const[r,c]of moves(s,p))mv.push({k:'m',pi,r,c,v:(dm[r*9+c]<0?99:dm[r*9+c])+Math.random()*.5})});
+  if(!mv.length){s.turn=o;continue}
+  ap(s,Math.random()<.1?mv[(Math.random()*mv.length)|0]:mv.reduce((a,b)=>b.v<a.v?b:a))}
+ return s.win==null?.5:s.win==me?1:0}
+function startAn(){if(S.win!=null||mode!='play')return;
+ const cs=cands(S).map(m=>{const p=S.pawns[m.pi];return{...m,n:0,w:0,win:m.k=='m'&&m.r==(p.p?8:0),
+  label:m.k=='m'?`コマ ${cn(p.r,p.c)}→${cn(m.r,m.c)}`:m.t=='h'?`横壁 ${cn(m.r,m.c)}・${cn(m.r,m.c+1)}の下`:`縦壁 ${cn(m.r,m.c)}・${cn(m.r+1,m.c)}の右`}});
+ an={key:JSON.stringify(S),cs,N:0,t0:performance.now(),run:true};prev=null;
+ const w=cs.find(m=>m.win);if(w){w.n=1;w.w=1;an.N=1;an.run=false;render();return}
+ step()}
+function step(){if(!an||!an.run)return;
+ if(an.key!==JSON.stringify(S)){an=null;render();return}
+ const t1=performance.now()+40;
+ while(performance.now()<t1){let b=null,bv=-1;
+  for(const m of an.cs){const v=m.n?m.w/m.n+.5*Math.sqrt(Math.log(an.N+1)/m.n):1e9;if(v>bv){bv=v;b=m}}
+  b.w+=playout(S,b);b.n++;an.N++}
+ if(performance.now()-an.t0>anTime*1000)an.run=false;
+ render();if(an&&an.run)setTimeout(step,0)}
+const playCand=m=>m.k=='m'?doMove(S.pawns[m.pi],m.r,m.c):doWall(m.t,m.r,m.c);
+function anUI(){let h=`<div class="card"><button class="on" onclick="startAn()">🔍 最善手を探索</button> <select onchange="anTime=+this.value">${[2,5,15].map(x=>`<option value="${x}" ${x==anTime?'selected':''}>${x}秒</option>`).join('')}</select>
+<br><label><input type="checkbox" ${autoAn?'checked':''} onchange="autoAn=this.checked;if(autoAn&&!an)startAn()"> 手を指したら自動で再探索</label>`;
+ if(an){const s=an.cs.filter(m=>m.n).sort((a,b)=>b.w/b.n-a.w/a.n).slice(0,8);
+  h+=`<div style="font-size:12px;opacity:.7">${an.run?'探索中…':'完了'} 模擬対局 ${an.N}回（${NM[S.turn]}の勝率）</div>`;
+  s.forEach(m=>{h+=`<div onclick="prev=an.cs[${an.cs.indexOf(m)}];render()" style="padding:5px 0;border-top:1px solid var(--line);cursor:pointer;${m===prev?'font-weight:700;color:#d99a00':''}">${m.win?'即勝利':(m.w/m.n*100).toFixed(0)+'%'} <small>(${m.n})</small> ${m.label}</div>`});
+  if(prev)h+=`<button class="on" onclick="playCand(prev)">この手を指す</button>`}
+ return h+`<div style="font-size:12px;opacity:.7">実際に指された手を盤面に入力すると、その局面から再探索できます。候補の壁は有望な14手に絞っています。</div></div>`}
+// ---- キーボード操作 ----
+let kd=null,lastK='';
+function pickDest(k){const dr=k=='w'?-1:k=='s'?1:0,dc=k=='a'?-1:k=='d'?1:0;
+ const t=moves(S,sel).filter(([r,c])=>dr?(r-sel.r)*dr>0:(c-sel.c)*dc>0);
+ if(!t.length)return;
+ const pf=([r,c])=>dr?Math.abs(c-sel.c)*10+Math.abs(r-sel.r):Math.abs(r-sel.r)*10+Math.abs(c-sel.c);
+ t.sort((a,b)=>pf(a)-pf(b));
+ const i=kd&&kd[2]===sel&&lastK==k?t.findIndex(x=>x[0]==kd[0]&&x[1]==kd[1]):-1;
+ kd=[...t[(i+1)%t.length],sel];lastK=k}
+addEventListener('keydown',e=>{
+ if(mode!='play'||e.ctrlKey||e.metaKey||e.altKey)return;
+ const tg=e.target.tagName;if(tg=='SELECT'||(tg=='INPUT'&&e.target.type=='number'))return;
+ const k=e.key.toLowerCase();
+ if(!['tab','w','a','s','d','r','q','e',' ','enter','z','escape'].includes(k))return;
+ e.preventDefault();
+ if(k=='z'){undo();return}
+ if(S.win!=null||ai[S.turn])return;
+ const mine=S.pawns.filter(p=>p.p==S.turn),wm=tool=='wallH'||tool=='wallV';
+ if(k=='tab'){
+  if(wm){tool='move';sel=mine[0]||null;kd=null;ghost=null}
+  else if(S.walls[S.turn]>0){tool='wallH';sel=null;kd=null;ghost={t:'h',r:3,c:3}}
+  render();return}
+ if(k=='escape'){kd=null;ghost=null;sel=null;render();return}
+ if(wm){
+  if(!ghost)ghost={t:tool=='wallH'?'h':'v',r:3,c:3};
+  if(k=='r'){tool=tool=='wallH'?'wallV':'wallH';ghost.t=ghost.t=='h'?'v':'h'}
+  else if(k.length==1&&'wasd'.includes(k)){ghost.r=Math.min(7,Math.max(0,ghost.r+(k=='s')-(k=='w')));ghost.c=Math.min(7,Math.max(0,ghost.c+(k=='d')-(k=='a')))}
+  else if((k==' '||k=='enter')&&legal(S,ghost.t,ghost.r,ghost.c)){const g=ghost;tool='move';doWall(g.t,g.r,g.c);return}
+  render();return}
+ tool='move';
+ if(!sel||!mine.includes(sel)){sel=mine[0]||null;kd=null}
+ if(!sel)return;
+ if(k=='q'||k=='e'){const i=mine.indexOf(sel);sel=mine[(i+(k=='e'?1:mine.length-1))%mine.length];kd=null}
+ else if(k=='w'||k=='a'||k=='s'||k=='d')pickDest(k);
+ else if((k==' '||k=='enter')&&kd&&kd[2]===sel&&moves(S,sel).some(([a,b])=>a==kd[0]&&b==kd[1])){const d=kd;kd=null;doMove(sel,d[0],d[1]);return}
+ render()});
+addEventListener('keyup',e=>{if(mode=='play'&&(e.key==' '||e.key=='Enter')&&e.target.tagName=='BUTTON')e.preventDefault()});
+// ---- 自己対戦からの学習（経験ブック）----
+const LB=1.5;let book=new Map(),trace=[],note='',train=null,trN=30;
+try{book=new Map(JSON.parse(localStorage.getItem('qbook2')||'[]').map(([k,m])=>[k,new Map(m)]))}catch(_){}
+function saveBook(){try{let e=[...book].map(([k,m])=>[k,[...m]]);
+ if(e.reduce((a,x)=>a+x[1].length,0)>8000){e=e.map(([k,m])=>[k,m.filter(x=>x[1][0]>1)]).filter(x=>x[1].length);book=new Map(e.map(([k,m])=>[k,new Map(m)]))}
+ localStorage.setItem('qbook2',JSON.stringify(e))}catch(_){}schedSync()}
+const wl=(A,c)=>A.flatMap((a,r)=>a.map((b,i)=>b?c+(r*8+i).toString(36):'')).join('');
+const skey=s=>s.turn+s.walls.join('.')+s.pawns.map(p=>''+p.p+p.r+p.c).join('')+'/'+wl(s.hw,'h')+wl(s.vw,'v');
+const mkey=(s,m)=>m.k=='m'?'m'+s.pawns.indexOf(m.p)+m.r+m.c:m.t+m.r+m.c;
+function commit(tr,win){const dn=new Set();for(const[k,mk,pl]of tr){if(dn.has(k+mk))continue;dn.add(k+mk);let m=book.get(k);if(!m)book.set(k,m=new Map());let e=m.get(mk);if(!e)m.set(mk,e=[0,0]);e[0]++;if(pl==win)e[1]++}}
+function recM(s,m){if(mode=='play'&&ai[s.turn]&&!isRetreat(s,m))trace.push([skey(s),mkey(s,m),s.turn])}
+function endRec(){commit(trace,S.win);trace=[];saveBook()}
+function updSt(s,m){s.st=s.st||[0,0];const t=s.turn;if(m.k=='m'){const g=gmap(s,t);s.st[t]=g[m.p.r*9+m.p.c]-g[m.r*9+m.c]>0?0:s.st[t]+1}else s.st[t]=0}
+function stepG(s,m){updSt(s,m);const t=s.turn;if(m.k=='m'){m.p.r=m.r;m.p.c=m.c;if(m.r==(m.p.p?8:0)){s.win=m.p.p;return}}else{(m.t=='h'?s.hw:s.vw)[m.r][m.c]=true;s.walls[t]--}s.turn=1-t}
+function randMove(g){const ms=genAI(g).slice(0,8).sort(()=>Math.random()-.5);for(const m of ms)if(m.k=='m'||legal(g,m.t,m.r,m.c))return m;return null}
+function selfGame(){const g=JSON.parse(start),tr=[],sn=new Map([[skey(g),1]]);let n=0;
+ while(g.win==null&&n<240){const t=g.turn,m=Math.random()<.12?randMove(g):aiPick(g,sn);if(!m)break;if(!isRetreat(g,m))tr.push([skey(g),mkey(g,m),t]);stepG(g,m);n++;const k=skey(g);sn.set(k,(sn.get(k)||0)+1)}
+ if(g.win==null)return null;commit(tr,g.win);return g.win}
+let seen=new Map(),wo=0;
+const noteSeen=()=>{const k=skey(S);seen.set(k,(seen.get(k)||0)+1)};
+function rebuildSeen(){seen=new Map();for(const h of hist){const k=skey(JSON.parse(h));seen.set(k,(seen.get(k)||0)+1)}noteSeen()}
+function ckey(s,m){const t=s.turn;let k;
+ if(m.k=='m'){const or=m.p.r,oc=m.p.c;m.p.r=m.r;m.p.c=m.c;s.turn=1-t;k=skey(s);s.turn=t;m.p.r=or;m.p.c=oc}
+ else{const A=m.t=='h'?s.hw:s.vw;A[m.r][m.c]=true;s.walls[t]--;s.turn=1-t;k=skey(s);s.turn=t;s.walls[t]++;A[m.r][m.c]=false}
+ return k}
+function isRetreat(s,m){if(m.k!='m')return false;const d=gmap(s,s.turn);return d[m.r*9+m.c]>d[m.p.r*9+m.p.c]}
+function startTrain(n){if(train||mode!='play')return;trN=n;train={n,i:0,w:[0,0]};trainStep()}
+function trainStep(){if(!train)return;const t1=performance.now()+80;
+ while(performance.now()<t1&&train.i<train.n){const r=selfGame();if(r!=null)train.w[r]++;train.i++}
+ const done=train.i>=train.n;if(done){saveBook()}render();if(done)train=null;else setTimeout(trainStep,0)}
+function resetBook(){book=new Map();try{localStorage.removeItem('qbook2')}catch(_){}if(db&&myId)db.doc('qbook/'+myId).delete().catch(()=>{});render()}
+function trainUI(){const bn=[...book.values()].reduce((a,m)=>a+m.size,0);let h=`<div class="card"><b>🎓 AI自己対戦で学習</b> <small>（この配置から対戦）</small><br>`;
+ if(train)h+=`${train.i}/${train.n}局　${NM[0]}勝ち${train.w[0]}・${NM[1]}勝ち${train.w[1]} <button onclick="train.n=train.i">停止</button>`;
+ else h+=`<select onchange="trN=+this.value">${[10,30,100].map(x=>`<option value="${x}" ${x==trN?'selected':''}>${x}局</option>`).join('')}</select> <button class="on" onclick="startTrain(trN)">学習実行</button> <button onclick="resetBook()">学習データ消去</button>`;
+ return h+`<div class="n">記録：${book.size}局面／${bn}手。勝った側の手を記録し、勝率の高い手ほどAIが選びやすくなります（自己対戦中は一定確率で試しにランダムな手も指します）。データはこのブラウザに保存され、共有に接続できる場合はクラウドにも保存されます。</div>${shUI()}${driveUI()}</div>`}
+// ---- 評価の重み（調整可能）----
+const DW={...W};try{Object.assign(W,JSON.parse(localStorage.getItem('qw')||'{}'))}catch(_){}
+const saveW=()=>{try{localStorage.setItem('qw',JSON.stringify(W))}catch(_){}};
+function resetW(){Object.assign(W,DW);saveW();render()}
+function wUI(){const f=(k,l)=>`<label style="display:inline-block;margin:2px 8px 2px 0">${l} <input type="number" step="0.1" min="0" max="5" value="${W[k]}" onchange="W.${k}=Math.max(0,+this.value||0);saveW()"></label>`;
+ return `<div class="card"><b>🧮 AIの評価の重み</b><br>${f('wall','壁の価値')}${f('fwd','前進ボーナス')}${f('back','後退ペナルティ')}${f('stall','停滞ペナルティ')}${f('rep','繰り返し')}${f('learn','学習の影響')}<br><button onclick="resetW()">初期値に戻す</button>
+ <div class="n">評価＝（相手の最短手数−自分の最短手数）＋手番の有利＋壁の価値×残り壁の差。さらに手ごとに調整します。<br>壁の価値：大きいほど壁を温存。前進ボーナス：1歩近づくごとの加点。後退ペナルティ：遠ざかる手の減点。停滞ペナルティ：ゴールに近づかない手が連続するほど増える減点（様子見の往復を止める）。繰り返し：既出の局面に戻る手の減点。学習の影響：自己対戦の勝率の反映の強さ。</div></div>`}
+// ---- 学習データの共有（共有データベース）----
+let db=null,myId=null,shared=new Map(),useShared=true,syncT=null,shInfo={state:'未接続',peers:0,t:0,err:'',loaded:false};
+function stat(k,mk){const a=book.get(k),b=useShared?shared.get(k):null,x=a&&a.get(mk),y=b&&b.get(mk);if(!x&&!y)return null;return[(x?x[0]:0)+(y?y[0]:0),(x?x[1]:0)+(y?y[1]:0)]}
+function packBook(max=200000){const e=[...book].map(([k,m])=>[k,[...m].map(([mk,v])=>[mk,v[0],v[1]]),[...m.values()].reduce((a,x)=>a+x[0],0)]).sort((a,b)=>b[2]-a[2]);
+ const out=[];let len=2;for(const[k,m]of e){const t=JSON.stringify([k,m]);if(len+t.length>max)break;out.push([k,m]);len+=t.length+1}return JSON.stringify(out)}
+function unpack(str){const mp=new Map();for(const[k,m]of JSON.parse(str))mp.set(k,new Map(m.map(([mk,n,w])=>[mk,[n,w]])));return mp}
+function mergeOwn(mp){let ch=false;for(const[k,m]of mp){let a=book.get(k);if(!a)book.set(k,a=new Map());for(const[mk,v]of m){const e=a.get(mk);if(!e||v[0]>e[0]){a.set(mk,[v[0],v[1]]);ch=true}}}if(ch)saveBook()}
+function schedSync(){if(!db||syncT)return;syncT=setTimeout(()=>{syncT=null;syncUp()},3000)}
+async function syncUp(){if(!db||!myId)return;
+ try{await db.doc('qbook/'+myId).set({v:2,t:Date.now(),data:packBook()});shInfo.t=Date.now();shInfo.err=''}
+ catch(e){shInfo.err=e&&e.code=='not_granted'?'書き込み権限がありません（閲覧のみ）':(e&&e.message)||'同期に失敗しました'}render()}
+function shUI(){if(!db)return `<div class="n" style="margin-top:6px">☁ 共有：未接続（この端末のブラウザだけに保存。ログインした状態で開くと共有できます）</div>`;
+ const n=[...shared.values()].reduce((a,m)=>a+m.size,0);
+ return `<div class="n" style="margin-top:6px">☁ 共有：${shInfo.state}／他の人のデータ ${shInfo.peers}人分・${n}手${shInfo.t?'／最終アップロード '+new Date(shInfo.t).toLocaleTimeString():''}${shInfo.err?' <span style="color:#d33">⚠ '+shInfo.err+'</span>':''}</div>
+ <label><input type="checkbox" ${useShared?'checked':''} onchange="useShared=this.checked"> 他の人の学習データもAIに反映</label> <button onclick="syncUp()">今すぐ同期</button>`}
+(async()=>{try{if(typeof claude=='undefined')return;const u=await claude.use('user'),d=await claude.use('db');if(!d||!u)return;
+ const id=await u.id();if(!id)return;db=d;myId=id;shInfo.state='接続中';render();
+ db.collection('qbook').onSnapshot(snap=>{const first=!shInfo.loaded;shared=new Map();let peers=0;
+  for(const doc of snap.docs){const x=doc.data();if(!x||typeof x.data!='string')continue;let mp;try{mp=unpack(x.data)}catch(_){continue}
+   if(doc.id===myId){if(first)mergeOwn(mp);continue}
+   peers++;for(const[k,m]of mp){let a=shared.get(k);if(!a)shared.set(k,a=new Map());for(const[mk,v]of m){const e=a.get(mk);if(e){e[0]+=v[0];e[1]+=v[1]}else a.set(mk,[v[0],v[1]])}}}
+  shInfo.loaded=true;shInfo.peers=peers;shInfo.state='接続中';render()},
+  e=>{shInfo.state='読み込みエラー';shInfo.err=(e&&e.message)||'';render()})}catch(_){}})();
+// ---- Google Drive バックアップ（ボタン操作のみ）----
+let gd={mcp:null,msg:'',busy:false};
+const esc=t=>String(t).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const DRV='Google Drive';
+function mcpErr(e,write){const c=e&&e.code;let m;
+ if(c=='server_not_connected')m='⚠ Google Driveが接続されていません。Claudeの設定でGoogle Driveコネクタを追加してください。';
+ else if(c=='needs_reauth')m='⚠ Google Driveの再認証が必要です。Claudeの設定でコネクタを再接続してください。';
+ else if(c=='consent_required')m='⚠ このページからのGoogle Drive利用が許可されていません。';
+ else if(c=='not_in_manifest'||c=='blocked_by_policy')m='⚠ この環境ではGoogle Driveを利用できません（組織の設定）。';
+ else if(c=='tool_error')m='⚠ Google Driveがエラーを返しました：'+((e&&e.message)||'');
+ else if((e&&e.retryable)||c=='server_unavailable'||c=='upstream_error'||c=='rate_limited')m='⚠ 一時的に失敗しました。時間をおいてもう一度お試しください。'+(write?'（保存済みの可能性があります。Driveを確認してから再実行してください）':'');
+ else m='⚠ 失敗しました：'+((e&&e.message)||c||'不明なエラー');return m}
+async function driveExport(){if(!gd.mcp||gd.busy)return;gd.busy=true;gd.msg='書き出し中…';render();
+ const d=new Date(),p=n=>String(n).padStart(2,'0'),name=`quoridor_book_${d.getFullYear()}${p(d.getMonth()+1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}.json`;
+ try{const r=await gd.mcp.callTool(DRV,'create_file',{title:name,textContent:JSON.stringify({v:2,t:Date.now(),data:packBook(600000)}),contentMimeType:'application/json',disableConversionToGoogleType:true});
+  const f=r&&r.payload;gd.msg='✅ Driveに保存しました：'+((f&&f.title)||name)+'（'+book.size+'局面）'}
+ catch(e){gd.msg=mcpErr(e,true)}gd.busy=false;render()}
+async function driveImport(){if(!gd.mcp||gd.busy)return;gd.busy=true;gd.msg='読み込み中…';render();
+ try{const r=await gd.mcp.callTool(DRV,'search_files',{query:"title contains 'quoridor_book' and mimeType = 'application/json'",pageSize:30,excludeContentSnippets:true});
+  const files=((r&&r.payload&&r.payload.files)||[]).slice().sort((a,b)=>String(b.modifiedTime).localeCompare(String(a.modifiedTime)));
+  let done=false;
+  for(const f of files.slice(0,5)){const x=await gd.mcp.callTool(DRV,'download_file_content',{fileId:f.id});const b=x&&x.payload&&x.payload.content;if(!b)continue;
+   let o;try{o=JSON.parse(new TextDecoder().decode(Uint8Array.from(atob(b),c=>c.charCodeAt(0))))}catch(_){continue}
+   if(!o||typeof o.data!='string')continue;
+   let mp;try{mp=unpack(o.data)}catch(_){continue}
+   mergeOwn(mp);gd.msg='✅ '+f.title+' から読み込みました（'+mp.size+'局面を統合）';done=true;break}
+  if(!done)gd.msg=files.length?'読み込めるバックアップが見つかりませんでした（形式が違うファイルのみ）':'Driveにバックアップがありません。先に「Driveに書き出し」を行ってください。'}
+ catch(e){gd.msg=mcpErr(e,false)}gd.busy=false;render()}
+function driveUI(){if(!gd.mcp)return `<div class="n" style="margin-top:8px">📁 Google Drive：この環境では利用できません</div>`;
+ return `<div class="n" style="margin-top:8px">📁 Google Driveにバックアップ（ボタンを押したときだけ動作）</div><button ${gd.busy?'disabled':''} onclick="driveExport()">Driveに書き出し</button><button ${gd.busy?'disabled':''} onclick="driveImport()">Driveから読み込み</button>${gd.msg?`<div class="n">${esc(gd.msg)}</div>`:''}`}
+try{if(typeof claude!='undefined')claude.use('mcp').then(m=>{gd.mcp=m;render()}).catch(()=>{})}catch(_){}
+render();
+</script></body></html>
