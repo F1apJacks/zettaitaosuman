@@ -12,7 +12,7 @@ h1{font-size:18px;margin:4px 0 8px}
 button,select,input{font:inherit;color:inherit;background:var(--card);border:1px solid var(--line);border-radius:8px;padding:6px 10px;margin:2px;touch-action:manipulation}
 button.on{background:var(--wall);color:#fff;border-color:var(--wall)}
 button.act{background:#2f6fdb;color:#fff;border-color:#2f6fdb}
-input[type=number]{width:58px}
+input[type=number]{width:64px}
 .b{color:var(--b);font-weight:700}.r{color:var(--r);font-weight:700}
 .sub{font-size:12px;opacity:.75;margin-top:4px}
 .bar{display:flex;flex-wrap:wrap;align-items:center;gap:4px;margin-top:6px}
@@ -25,7 +25,7 @@ const PRE={std:[[0,8,4],[1,0,4]],b2:[[0,8,3],[0,8,5],[1,0,4]],r2:[[0,8,4],[1,0,3
 let S,hist=[],start,mode='play',tool='move',sel=null,ghost=null,ai=[false,false],timer=null,note='',wo=0;
 let aiDepth=3,W={wall:.2,prog:1.1,tempo:.5,fwd:.3,back:.8,rep:1.5,learn:1.5,margin:0,side:0,stall:1.2};
 let an=null,prev=null,anTime=5,autoAn=false,kd=null,lastK='';
-let book=new Map(),trace=[],train=null,trN=30,seen=new Map();
+let book=new Map(),trace=[],train=null,trN=200,seen=new Map(),worker=null;
 
 function mk(pre){return{pawns:PRE[pre].map(([p,r,c])=>({p,r,c})),hw:grid(),vw:grid(),walls:[10,10],turn:0,win:null}}
 S=mk('std');start=JSON.stringify(S);
@@ -102,40 +102,16 @@ function aiPick(s,sn=seen){const me=s.turn,sk=skey(s),gm=gmap(s,me),L=[];let bv=
  return C.sort((a,b)=>b.v-a.v)[0].m}
 
 function push(){hist.push(JSON.stringify(S))}
-function doMove(p,r,c){push();recM(S,{k:'m',p,r,c});updSt(S,{k:'m',p,r,c});p.r=r;p.c=c;if(r==(p.p?8:0)){S.win=p.p;endRec(S)}else S.turn=1-S.turn;noteSeen();sel=null;ghost=null;render()}
-function doWall(t,r,c){push();recM(S,{k:'w',t,r,c});updSt(S,{k:'w'});(t=='h'?S.hw:S.vw)[r][c]=S.turn+1;S.walls[S.turn]--;S.turn=1-S.turn;noteSeen();sel=null;ghost=null;render()}
+function doMove(p,r,c){push();recM(S,{k:'m',p,r,c});updSt(S,{k:'m',p,r,c});p.r=r;p.c=c;if(r==(p.p?8:0)){S.win=p.p;endRec(S)}else S.turn=1-S.turn;noteSeen();sel=null;ghost=null;tool='move';render()}
+function doWall(t,r,c){push();recM(S,{k:'w',t,r,c});updSt(S,{k:'w'});(t=='h'?S.hw:S.vw)[r][c]=S.turn+1;S.walls[S.turn]--;S.turn=1-S.turn;noteSeen();sel=null;ghost=null;tool='move';render()}
 function apply(m){if(!m)return;m.k=='m'?doMove(m.p,m.r,m.c):doWall(m.t,m.r,m.c)}
-function sched(){clearTimeout(timer);if(mode=='play'&&S.win==null&&ai[S.turn])timer=setTimeout(()=>apply(aiPick(S)),350);if(autoAn&&mode=='play'&&S.win==null&&!ai[S.turn]){const k=skeyStr(S);if(!an||an.key!==k)startAn()}}
+function sched(){clearTimeout(timer);if(mode=='play'&&S.win==null&&ai[S.turn])timer=setTimeout(()=>apply(aiPick(S)),250);if(autoAn&&mode=='play'&&S.win==null&&!ai[S.turn]){const k=skeyStr(S);if(!an||an.key!==k)startAn()}}
 
-let lpTimer=null,lpMoved=false,lpStart=null,lpPt=null;
-function coordsFromEvent(e){const rc=document.getElementById('bd').getBoundingClientRect();
+function onBoard(e){const rc=document.getElementById('bd').getBoundingClientRect();
  const cl=(v,m)=>Math.min(m,Math.max(0,v));
  const x=(e.clientX-rc.left)/rc.width*440,y=(e.clientY-rc.top)/rc.height*440;
- return{x,y,wr:cl(Math.round((y-45)/50),7),wc:cl(Math.round((x-45)/50),7),cr:cl(Math.floor(y/50),8),cc:cl(Math.floor(x/50),8)}}
-function clearLP(){clearTimeout(lpTimer);lpTimer=null;lpStart=null;lpPt=null}
-function onPointerDown(e){if(mode!='play'||S.win!=null||ai[S.turn])return;
- lpMoved=false;const pt=coordsFromEvent(e);lpStart=pt;lpPt=pt;
- clearTimeout(lpTimer);
- lpTimer=setTimeout(()=>{if(lpMoved||!lpPt||S.walls[S.turn]<=0)return;
-  const t=ghost&&ghost.t?ghost.t:'h';
-  ghost={t,r:lpPt.wr,c:lpPt.wc};sel=null;kd=null;render()},380)}
-function onPointerMove(e){if(!lpStart)return;const pt=coordsFromEvent(e);lpPt=pt;
- if(Math.hypot(pt.x-lpStart.x,pt.y-lpStart.y)>12){lpMoved=true;clearTimeout(lpTimer);lpTimer=null}}
-function onPointerUp(e){const pt=coordsFromEvent(e);const wasLP=lpTimer===null&&lpMoved===false&&lpStart!==null;
- clearLP();
- if(mode=='edit'){if(tool=='wallH'||tool=='wallV')wallTap(tool=='wallH'?'h':'v',pt.wr,pt.wc);else cellTap(pt.cr,pt.cc);return}
- if(S.win!=null||ai[S.turn])return;
- if(wasLP&&ghost){if(legal(S,ghost.t,ghost.r,ghost.c))doWall(ghost.t,ghost.r,ghost.c);return}
- if(ghost&&ghost.t){if(ghost.r==pt.wr&&ghost.c==pt.wc&&legal(S,ghost.t,ghost.r,ghost.c)){doWall(ghost.t,ghost.r,ghost.c);return}}
- if(tool=='wallH'||tool=='wallV')wallTap(tool=='wallH'?'h':'v',pt.wr,pt.wc);
- else cellTap(pt.cr,pt.cc)}
-function flipGhost(){if(!ghost)ghost={t:'h',r:3,c:3};else ghost={...ghost,t:ghost.t=='h'?'v':'h'};render()}
-function nudgeGhost(dr,dc){if(!ghost)ghost={t:'h',r:3,c:3};
- ghost={...ghost,r:Math.min(7,Math.max(0,ghost.r+dr)),c:Math.min(7,Math.max(0,ghost.c+dc))};render()}
-function confirmGhost(){if(!ghost||S.walls[S.turn]<=0)return;
- if(legal(S,ghost.t,ghost.r,ghost.c))doWall(ghost.t,ghost.r,ghost.c)}
-function cancelGhost(){ghost=null;render()}
-
+ if(tool=='wallH'||tool=='wallV')wallTap(tool=='wallH'?'h':'v',cl(Math.round((y-45)/50),7),cl(Math.round((x-45)/50),7));
+ else cellTap(cl(Math.floor(y/50),8),cl(Math.floor(x/50),8))}
 function cellTap(r,c){
  if(mode=='edit'){const i=S.pawns.findIndex(p=>p.r==r&&p.c==c);if(i>=0)S.pawns.splice(i,1);else S.pawns.push({p:tool=='pawn1'?1:0,r,c});render();return}
  if(S.win!=null||ai[S.turn])return;
@@ -148,44 +124,30 @@ function wallTap(t,r,c){
  if(S.win!=null||ai[S.turn]||S.walls[S.turn]<=0)return;
  if(ghost&&ghost.t==t&&ghost.r==r&&ghost.c==c&&legal(S,t,r,c))return doWall(t,r,c);
  ghost={t,r,c};sel=null;render()}
+function confirmGhost(){if(!ghost||S.walls[S.turn]<=0)return;
+ if(legal(S,ghost.t,ghost.r,ghost.c))doWall(ghost.t,ghost.r,ghost.c)}
 const setTool=t=>{tool=t;sel=null;ghost=null;render()};
-function setMode(m){if(m=='play'&&!pathOK(S)){note='ゴールに到達できないコマがあります。壁を調整してください。';render();return}note='';mode=m;clearTimeout(timer);clearLP();sel=null;ghost=null;tool=m=='edit'?'pawn0':'move';
+function setMode(m){if(m=='play'&&!pathOK(S)){note='ゴールに到達できないコマがあります。壁を調整してください。';render();return}note='';mode=m;clearTimeout(timer);sel=null;ghost=null;tool='move';
  if(m=='play'){S.win=null;S.pawns.forEach(p=>{if(p.r==(p.p?8:0))S.win=p.p});hist=[];start=JSON.stringify(S)}render()}
-function undo(){if(!hist.length)return;trace=[];ai=[false,false];clearTimeout(timer);S=JSON.parse(hist.pop());rebuildSeen();sel=null;ghost=null;render()}
-function reset(){ai=[false,false];S=JSON.parse(start);hist=[];sel=null;ghost=null;render()}
+function undo(){if(!hist.length)return;trace=[];ai=[false,false];clearTimeout(timer);tool='move';S=JSON.parse(hist.pop());rebuildSeen();sel=null;ghost=null;render()}
+function reset(){ai=[false,false];tool='move';S=JSON.parse(start);hist=[];sel=null;ghost=null;render()}
 function preset(k){S=mk(k);render()}
 function clearAll(){S.pawns=[];S.hw=grid();S.vw=grid();render()}
 
 const WR=(t,r,c,f,o)=>t=='h'?`<rect x="${c*50}" y="${r*50+40}" width="90" height="10" rx="3" style="fill:${f}" stroke="#0006" stroke-width=".8" opacity="${o}"/>`:`<rect x="${c*50+40}" y="${r*50}" width="10" height="90" rx="3" style="fill:${f}" stroke="#0006" stroke-width=".8" opacity="${o}"/>`;
 const wcol=v=>v===1?'var(--b)':v===2?'var(--r)':'var(--wall)';
-function board(){let h=`<svg id="bd" viewBox="0 0 440 440" onpointerdown="onPointerDown(event)" onpointermove="onPointerMove(event)" onpointerup="onPointerUp(event)" onpointercancel="clearLP()" style="width:100%;touch-action:none;display:block;user-select:none">`;
+function board(){let h=`<svg id="bd" viewBox="0 0 440 440" onclick="onBoard(event)" style="width:100%;touch-action:manipulation;display:block">`;
  for(let r=0;r<9;r++)for(let c=0;c<9;c++){h+=`<rect x="${c*50}" y="${r*50}" width="40" height="40" rx="5" style="fill:var(--cell)"/>`;
   if(r==0)h+=`<rect x="${c*50}" y="0" width="40" height="40" rx="5" fill="#2f6fdb" opacity=".22"/>`;
   if(r==8)h+=`<rect x="${c*50}" y="400" width="40" height="40" rx="5" fill="#d94a4a" opacity=".22"/>`}
  for(let r=0;r<8;r++)for(let c=0;c<8;c++){if(S.hw[r][c])h+=WR('h',r,c,wcol(S.hw[r][c]),1);if(S.vw[r][c])h+=WR('v',r,c,wcol(S.vw[r][c]),1)}
- if(ghost){const ok=legal(S,ghost.t,ghost.r,ghost.c);
-  h+=WR(ghost.t,ghost.r,ghost.c,ok?wcol(S.turn+1):'#888',.72);
-  if(ghost.t=='h')h+=`<rect x="${ghost.c*50}" y="${ghost.r*50+36}" width="90" height="18" rx="5" fill="none" stroke="${ok?'#2f6fdb':'#d33'}" stroke-width="2" stroke-dasharray="4"/>`;
-  else h+=`<rect x="${ghost.c*50+36}" y="${ghost.r*50}" width="18" height="90" rx="5" fill="none" stroke="${ok?'#2f6fdb':'#d33'}" stroke-width="2" stroke-dasharray="4"/>`}
+ if(ghost)h+=WR(ghost.t,ghost.r,ghost.c,legal(S,ghost.t,ghost.r,ghost.c)?wcol(S.turn+1):'#888',.65);
  if(prev&&an){if(prev.k=='w')h+=WR(prev.t,prev.r,prev.c,'#f5b800',.9);else{const q=S.pawns[prev.pi];if(q)h+=`<rect x="${prev.c*50}" y="${prev.r*50}" width="40" height="40" rx="5" fill="none" stroke="#f5b800" stroke-width="4"/><rect x="${q.c*50}" y="${q.r*50}" width="40" height="40" rx="5" fill="none" stroke="#f5b800" stroke-width="2" stroke-dasharray="4"/>`}}
  if(mode=='play'&&sel)for(const[r,c]of moves(S,sel))h+=`<circle cx="${c*50+20}" cy="${r*50+20}" r="9" fill="#3cb371" opacity=".85"/>`;
  if(kd&&mode=='play'&&sel&&kd[2]===sel)h+=`<circle cx="${kd[1]*50+20}" cy="${kd[0]*50+20}" r="14" fill="none" stroke="#f5b800" stroke-width="4"/>`;
  for(const p of S.pawns){const cur=mode=='play'&&S.win==null&&p.p==S.turn;
   h+=`<circle cx="${p.c*50+20}" cy="${p.r*50+20}" r="15" style="fill:var(${p.p?'--r':'--b'})" stroke="${p===sel?'#fc0':cur?'#fff':'#0004'}" stroke-width="${p===sel?4:2}"/>`}
  return h+'</svg>'}
-
-function ghostUI(){if(mode!='play'||S.win!=null||!ghost)return'';
- const ok=legal(S,ghost.t,ghost.r,ghost.c);
- return `<div class="card"><b>壁プレビュー調整</b>（${ghost.t=='h'?'横壁':'縦壁'} ${cn(ghost.r,ghost.c)}）
-  <div class="bar">
-   <button onclick="flipGhost()">向き切替（横/縦）</button>
-   <button onclick="nudgeGhost(-1,0)">↑</button>
-   <button onclick="nudgeGhost(1,0)">↓</button>
-   <button onclick="nudgeGhost(0,-1)">←</button>
-   <button onclick="nudgeGhost(0,1)">→</button>
-   <button class="act" ${ok?'':'disabled'} onclick="confirmGhost()">壁を確定</button>
-   <button onclick="cancelGhost()">取消</button>
-  </div></div>`}
 
 function render(){
  const curKey=skeyStr(S);
@@ -197,13 +159,14 @@ function render(){
  const tb=(t,l)=>`<button class="${tool==t?'on':''}" onclick="setTool('${t}')">${l}</button>`;
  let ui;
  if(mode=='play')ui=`<div class="card">${tb('move','コマ移動')}${tb('wallH','壁 横')}${tb('wallV','壁 縦')}
+  ${ghost?`<button class="act" ${legal(S,ghost.t,ghost.r,ghost.c)?'':'disabled'} onclick="confirmGhost()">壁確定</button>`:''}
   <button onclick="undo()">戻す</button><button onclick="reset()">最初から</button><button onclick="apply(aiPick(S))">AI 1手</button><button onclick="setMode('edit')">配置編集</button>
   <div class="bar">
    <label><input type="checkbox" ${ai[0]?'checked':''} onchange="ai[0]=this.checked;sched()"> 青をAI</label>
    <label><input type="checkbox" ${ai[1]?'checked':''} onchange="ai[1]=this.checked;sched()"> 赤をAI</label>
    <select onchange="aiDepth=+this.value">${[[1,'AI:弱'],[2,'AI:中'],[3,'AI:強'],[4,'AI:最強']].map(([v,l])=>`<option value="${v}" ${v==aiDepth?'selected':''}>${l}</option>`).join('')}</select>
   </div>
-  <div class="sub">スマホでは盤面長押しで壁プレビューを表示できます。探索中もコマ移動や壁配置を止めずに操作できます。</div>
+  <div class="sub">1手指すと自動でコマ移動ツールに戻ります。探索中もコマ移動や壁配置をそのまま行えます。</div>
   <details class="sub"><summary>キーボード操作一覧</summary>Tab=コマ/壁切替、WASD=選択/移動、R=壁の向き、Q/E=コマ切替、Space/Enter=決定、Z=戻す</details></div>`;
  else ui=`<div class="card">${tb('pawn0','青コマ')}${tb('pawn1','赤コマ')}${tb('wallH','壁 横')}${tb('wallV','壁 縦')}
   <div class="bar"><span>置く壁の持ち主</span><button class="${wo==0?'on':''}" onclick="wo=0;render()">青</button><button class="${wo==1?'on':''}" onclick="wo=1;render()">赤</button></div>
@@ -213,7 +176,7 @@ function render(){
   <div class="sub">マスをタップでコマ追加/削除。壁は交点付近をタップで追加/削除。ゴールは青が上端、赤が下端です。</div></div>`;
  document.getElementById('app').innerHTML=`<h1>コリドー シミュレーター</h1>
  <div class="card">${mode=='edit'?'<b>配置編集中</b>':st} ／ 最短手数 <span class="b">青${d[0]}</span> <span class="r">赤${d[1]}</span> ／ 残り壁 <span class="b">${S.walls[0]}</span>・<span class="r">${S.walls[1]}</span></div>
- ${board()}${ghostUI()}${ui}${mode=='play'?anUI()+trainUI()+wUI():''}`;
+ ${board()}${ui}${mode=='play'?anUI()+trainUI()+wUI():''}`;
  sched()}
 
 const cl2=s=>({pawns:s.pawns.map(p=>({...p})),hw:s.hw.map(a=>a.slice()),vw:s.vw.map(a=>a.slice()),walls:s.walls.slice(),turn:s.turn,win:s.win});
@@ -229,22 +192,22 @@ function cands(s){const me=s.turn,op=1-me,o=[],w=[];
  if(s.walls[me]>0)for(const t of['h','v'])for(let r=0;r<8;r++)for(let c=0;c<8;c++)if(legal(s,t,r,c)){const A=t=='h'?s.hw:s.vw;A[r][c]=true;const sc=dist(s,op)-dist(s,me);A[r][c]=false;w.push({k:'w',t,r,c,sc})}
  w.sort((a,b)=>b.sc-a.sc);return o.concat(w.slice(0,14))}
 function playout(s0,m){const s=cl2(s0),me=s0.turn;ap(s,m);
- for(let ply=0;ply<100&&s.win==null;ply++){
+ for(let ply=0;ply<80&&s.win==null;ply++){
   const t=s.turn,o=1-t,dm=dmap(s,t),my=dmin(s,dm,t),dopm=dmap(s,o),dop=dmin(s,dopm,o);
-  if(s.walls[t]>0&&Math.random()<(dop<=my?.4:.12)){
+  if(s.walls[t]>0&&Math.random()<(dop<=my?.35:.1)){
    let bw=null,bs=0;const ops=s.pawns.filter(p=>p.p==o);
-   for(let i=0;i<5;i++){let wt,r,c;
-    if(ops.length&&Math.random()<.6){const q=ops[(Math.random()*ops.length)|0];wt='h';r=o?q.r:q.r-1;c=q.c-(Math.random()<.5?1:0)}
+   for(let i=0;i<4;i++){let wt,r,c;
+    if(ops.length&&Math.random()<.65){const q=ops[(Math.random()*ops.length)|0];wt='h';r=o?q.r:q.r-1;c=q.c-(Math.random()<.5?1:0)}
     else{wt=Math.random()<.5?'h':'v';r=(Math.random()*8)|0;c=(Math.random()*8)|0}
     if(!wallOK(s,wt,r,c))continue;const A=wt=='h'?s.hw:s.vw;A[r][c]=true;
     const ok=pathOK(s),a=dmin(s,dmap(s,o),o),b=dmin(s,dmap(s,t),t);A[r][c]=false;
     if(!ok||a>=99||b>=99)continue;const sc=(a-dop)-(b-my);if(sc>bs){bs=sc;bw={wt,r,c}}}
    if(bw){(bw.wt=='h'?s.hw:s.vw)[bw.r][bw.c]=true;s.walls[t]--;s.turn=o;continue}}
-  const mv=[];s.pawns.forEach((p,pi)=>{if(p.p==t)for(const[r,c]of moves(s,p))mv.push({k:'m',pi,r,c,v:(dm[r*9+c]<0?99:dm[r*9+c])+Math.random()*.5})});
+  const mv=[];s.pawns.forEach((p,pi)=>{if(p.p==t)for(const[r,c]of moves(s,p))mv.push({k:'m',pi,r,c,v:(dm[r*9+c]<0?99:dm[r*9+c])+Math.random()*.4})});
   if(!mv.length){s.turn=o;continue}
   ap(s,Math.random()<.1?mv[(Math.random()*mv.length)|0]:mv.reduce((a,b)=>b.v<a.v?b:a))}
  if(s.win==null)return .5;
- if(s.win==me){const wallBonus=Math.max(0,(s.walls[me]-s.walls[1-me])*.03);const paceBonus=Math.max(0,(100-ply)*.001);return Math.min(1,.85+wallBonus+paceBonus)}
+ if(s.win==me){const wallBonus=Math.max(0,(s.walls[me]-s.walls[1-me])*.03);return Math.min(1.1,.85+wallBonus)}
  return 0}
 function startAn(){if(S.win!=null||mode!='play')return;
  const cs=cands(S).map(m=>{const p=S.pawns[m.pi];return{...m,n:0,w:0,win:m.k=='m'&&m.r==(p.p?8:0),
@@ -289,12 +252,12 @@ addEventListener('keydown',e=>{
   if(wm){tool='move';sel=mine[0]||null;kd=null;ghost=null}
   else if(S.walls[S.turn]>0){tool='wallH';sel=null;kd=null;ghost={t:'h',r:3,c:3}}
   render();return}
- if(k=='escape'){kd=null;ghost=null;sel=null;render();return}
+ if(k=='escape'){kd=null;ghost=null;sel=null;tool='move';render();return}
  if(wm){
   if(!ghost)ghost={t:tool=='wallV'?'v':'h',r:3,c:3};
   if(k=='r'){tool=tool=='wallH'?'wallV':'wallH';ghost.t=ghost.t=='h'?'v':'h'}
   else if(k.length==1&&'wasd'.includes(k)){ghost.r=Math.min(7,Math.max(0,ghost.r+(k=='s')-(k=='w')));ghost.c=Math.min(7,Math.max(0,ghost.c+(k=='d')-(k=='a')))}
-  else if((k==' '||k=='enter')&&legal(S,ghost.t,ghost.r,ghost.c)){const g=ghost;tool='move';doWall(g.t,g.r,g.c);return}
+  else if((k==' '||k=='enter')&&legal(S,ghost.t,ghost.r,ghost.c)){const g=ghost;doWall(g.t,g.r,g.c);return}
   render();return}
  tool='move';
  if(!sel||!mine.includes(sel)){sel=mine[0]||null;kd=null}
@@ -308,7 +271,7 @@ addEventListener('keyup',e=>{if(mode=='play'&&(e.key==' '||e.key=='Enter')&&e.ta
 const LB=1.5;
 try{book=new Map(JSON.parse(localStorage.getItem('qbook2')||'[]').map(([k,m])=>[k,new Map(m)]))}catch(_){}
 function saveBook(){try{let e=[...book].map(([k,m])=>[k,[...m]]);
- if(e.reduce((a,x)=>a+x[1].length,0)>8000){e=e.map(([k,m])=>[k,m.filter(x=>x[1][0]>1)]).filter(x=>x[1].length);book=new Map(e.map(([k,m])=>[k,new Map(m)]))}
+ if(e.reduce((a,x)=>a+x[1].length,0)>12000){e=e.map(([k,m])=>[k,m.filter(x=>x[1][0]>1)]).filter(x=>x[1].length);book=new Map(e.map(([k,m])=>[k,new Map(m)]))}
  localStorage.setItem('qbook2',JSON.stringify(e))}catch(_){}schedSync()}
 
 function mirrorState(s){
@@ -335,16 +298,12 @@ function commit(tr,endState){if(!endState||endState.win==null)return;const dn=ne
   e[0]++;e[1]+=rewardFor(endState,pl)}
  pruneWeakEntries()}
 function pruneWeakEntries(){let total=[...book.values()].reduce((a,m)=>a+m.size,0);
- if(total<=8000)return;
- for(const[k,m]of book){for(const[mk,e]of m){if(e[0]<=1){m.delete(mk);total--}}if(!m.size)book.delete(k);if(total<=8000)break}}
+ if(total<=12000)return;
+ for(const[k,m]of book){for(const[mk,e]of m){if(e[0]<=1){m.delete(mk);total--}}if(!m.size)book.delete(k);if(total<=12000)break}}
 function recM(s,m){if(mode=='play'&&ai[s.turn]&&!isRetreat(s,m))trace.push([skey(s),mkey(s,m),s.turn])}
 function endRec(endState){commit(trace,endState);trace=[];saveBook()}
 function updSt(s,m){s.st=s.st||[0,0];const t=s.turn;if(m.k=='m'){const g=gmap(s,t);s.st[t]=g[m.p.r*9+m.p.c]-g[m.r*9+m.c]>0?0:s.st[t]+1}else s.st[t]=0}
 function stepG(s,m){updSt(s,m);const t=s.turn;if(m.k=='m'){m.p.r=m.r;m.p.c=m.c;if(m.r==(m.p.p?8:0)){s.win=m.p.p;return}}else{(m.t=='h'?s.hw:s.vw)[m.r][m.c]=true;s.walls[t]--}s.turn=1-t}
-function randMove(g){const ms=genAI(g).slice(0,8).sort(()=>Math.random()-.5);for(const m of ms)if(m.k=='m'||legal(g,m.t,m.r,m.c))return m;return null}
-function selfGame(){const g=JSON.parse(start),tr=[],sn=new Map([[skey(g),1]]);let n=0;
- while(g.win==null&&n<240){const t=g.turn,m=Math.random()<.12?randMove(g):aiPick(g,sn);if(!m)break;if(!isRetreat(g,m))tr.push([skey(g),mkey(g,m),t]);stepG(g,m);n++;const k=skey(g);sn.set(k,(sn.get(k)||0)+1)}
- if(g.win==null)return null;commit(tr,g);return g.win}
 const noteSeen=()=>{const k=skey(S);seen.set(k,(seen.get(k)||0)+1)};
 function rebuildSeen(){seen=new Map();for(const h of hist){const k=skey(JSON.parse(h));seen.set(k,(seen.get(k)||0)+1)}noteSeen()}
 function ckey(s,m){const t=s.turn;let k;
@@ -352,11 +311,150 @@ function ckey(s,m){const t=s.turn;let k;
  else{const A=m.t=='h'?s.hw:s.vw;A[m.r][m.c]=true;s.walls[t]--;s.turn=1-t;k=skey(s);s.turn=t;s.walls[t]++;A[m.r][m.c]=false}
  return k}
 function isRetreat(s,m){if(m.k!='m')return false;const d=gmap(s,s.turn);return d[m.r*9+m.c]>d[m.p.r*9+m.p.c]}
-function startTrain(n){if(train||mode!='play')return;trN=n;train={n,i:0,w:[0,0]};trainStep()}
-function trainStep(){if(!train)return;const t1=performance.now()+60;
- while(performance.now()<t1&&train.i<train.n){const r=selfGame();if(r!=null)train.w[r]++;train.i++}
- const done=train.i>=train.n;if(done){saveBook()}render();if(done)train=null;else setTimeout(trainStep,10)}
-function resetBook(){book=new Map();try{localStorage.removeItem('qbook2')}catch(_){}if(db&&myId)db.doc('qbook/'+myId).delete().catch(()=>{});render()}
+
+function buildWorkerCode(){return `
+const D=[[-1,0],[1,0],[0,-1],[0,1]];
+const inb=(r,c)=>r>=0&&r<9&&c>=0&&c<9;
+const H=(s,r,c)=>r>=0&&r<8&&c>=0&&c<8&&s.hw[r][c];
+const V=(s,r,c)=>r>=0&&r<8&&c>=0&&c<8&&s.vw[r][c];
+function blocked(s,r,c,dr,dc){
+ if(dr==1)return H(s,r,c)||H(s,r,c-1);
+ if(dr==-1)return H(s,r-1,c)||H(s,r-1,c-1);
+ if(dc==1)return V(s,r,c)||V(s,r-1,c);
+ return V(s,r,c-1)||V(s,r-1,c-1)}
+const occ=(s,r,c)=>s.pawns.some(p=>p.r==r&&p.c==c);
+function moves(s,p){const o=[];
+ for(const[dr,dc]of D){if(blocked(s,p.r,p.c,dr,dc))continue;const r=p.r+dr,c=p.c+dc;if(!inb(r,c))continue;
+  if(!occ(s,r,c)){o.push([r,c]);continue}
+  const r2=r+dr,c2=c+dc;
+  if(inb(r2,c2)&&!blocked(s,r,c,dr,dc)&&!occ(s,r2,c2)){o.push([r2,c2]);continue}
+  for(const[a,b]of D){if(a*dr+b*dc!==0)continue;
+   if(!blocked(s,r,c,a,b)&&inb(r+a,c+b)&&!occ(s,r+a,c+b))o.push([r+a,c+b])}}
+ return o}
+function dmap(s,pl){const g=pl?8:0,d=new Int8Array(81).fill(-1),q=[];
+ for(let c=0;c<9;c++){d[g*9+c]=0;q.push(g*9+c)}
+ for(let i=0;i<q.length;i++){const r=(q[i]/9)|0,c=q[i]%9;for(const[dr,dc]of D){const a=r+dr,b=c+dc;if(!inb(a,b)||blocked(s,r,c,dr,dc)||d[a*9+b]>=0)continue;d[a*9+b]=d[q[i]]+1;q.push(a*9+b)}}
+ return d}
+const has=(s,pl)=>s.pawns.some(p=>p.p==pl);
+const pathOK=s=>[0,1].every(pl=>{if(!has(s,pl))return true;const d=dmap(s,pl);return s.pawns.every(p=>p.p!=pl||d[p.r*9+p.c]>=0)});
+function wallOK(s,t,r,c){if(r<0||r>7||c<0||c>7)return false;
+ const A=t=='h'?s.hw:s.vw,B=t=='h'?s.vw:s.hw;
+ if(A[r][c]||B[r][c])return false;
+ if(t=='h'){if((c>0&&A[r][c-1])||(c<7&&A[r][c+1]))return false}
+ else if((r>0&&A[r-1][c])||(r<7&&A[r+1][c]))return false;
+ return true}
+function mirrorState(s){
+ const hw=s.hw.map(row=>row.slice().reverse());
+ const vw=s.vw.map(row=>{const nr=Array(8).fill(false);for(let c=0;c<8;c++)if(row[7-c])nr[c]=true;return nr});
+ const pawns=s.pawns.map(p=>({...p,c:8-p.c}));
+ return{...s,pawns,hw,vw}}
+const wl=(A,c)=>A.flatMap((a,r)=>a.map((b,i)=>b?c+(r*8+i).toString(36):'')).join('');
+const rawKey=s=>s.turn+s.walls.join('.')+s.pawns.map(p=>''+p.p+p.r+p.c).join('')+'/'+wl(s.hw,'h')+wl(s.vw,'v');
+function skey(s){const a=rawKey(s),b=rawKey(mirrorState(s));return a<=b?a:b}
+function mkey(s,m){const a=rawKey(s),b=rawKey(mirrorState(s));
+ if(a<=b)return m.k=='m'?'m'+s.pawns.indexOf(m.p)+m.r+m.c:m.t+m.r+m.c;
+ if(m.k=='m')return'm'+s.pawns.indexOf(m.p)+m.r+(8-m.c);
+ if(m.t=='h')return'h'+m.r+(7-m.c);
+ return'v'+m.r+(7-m.c)}
+function rewardFor(s,pl){if(s.win==null)return .5;if(s.win!=pl)return 0;
+ const wallDiff=Math.max(0,(s.walls[pl]-s.walls[1-pl])*.04);
+ return Math.min(1.2,.85+wallDiff)}
+function pickFast(s,dm){
+ const t=s.turn,o=1-t,dopm=dmap(s,o);
+ let myD=99,opD=99;
+ for(const p of s.pawns){if(p.p==t&&dm[p.r*9+p.c]>=0&&dm[p.r*9+p.c]<myD)myD=dm[p.r*9+p.c];
+  if(p.p==o&&dopm[p.r*9+p.c]>=0&&dopm[p.r*9+p.c]<opD)opD=dopm[p.r*9+p.c]}
+ if(s.walls[t]>0&&Math.random()<(opD<=myD?.3:.08)){
+  const ops=s.pawns.filter(p=>p.p==o);
+  for(let i=0;i<3;i++){
+   let wt='h',r=3,c=3;
+   if(ops.length&&Math.random()<.7){const q=ops[(Math.random()*ops.length)|0];r=Math.min(7,Math.max(0,o?q.r:q.r-1));c=Math.min(7,Math.max(0,q.c-(Math.random()<.5?1:0)))}
+   else{wt=Math.random()<.5?'h':'v';r=(Math.random()*8)|0;c=(Math.random()*8)|0}
+   if(!wallOK(s,wt,r,c))continue;
+   const A=wt=='h'?s.hw:s.vw;A[r][c]=true;
+   if(pathOK(s)){s.walls[t]--;return{k:'w',t,r,c}}
+   A[r][c]=false}}
+ const mv=[];
+ s.pawns.forEach((p,pi)=>{if(p.p==t)for(const[r,c]of moves(s,p)){
+  const dVal=dm[r*9+c]<0?99:dm[r*9+c];
+  mv.push({k:'m',pi,p,r,c,v:dVal+Math.random()*.45})}});
+ if(!mv.length)return null;
+ if(Math.random()<.14)return mv[(Math.random()*mv.length)|0];
+ mv.sort((a,b)=>a.v-b.v);return mv[0]}
+function runOne(startObj){
+ const g={pawns:startObj.pawns.map(p=>({...p})),hw:startObj.hw.map(a=>a.slice()),vw:startObj.vw.map(a=>a.slice()),walls:startObj.walls.slice(),turn:startObj.turn,win:null};
+ const tr=[];let ply=0;
+ while(g.win==null&&ply<140){
+  const t=g.turn,dm=dmap(g,t),m=pickFast(g,dm);
+  if(!m){g.turn=1-t;ply++;continue}
+  if(m.k=='m'){
+   const prevD=dm[m.p.r*9+m.p.c],nextD=dm[m.r*9+m.c];
+   if(nextD<0||nextD<=prevD)tr.push([skey(g),mkey(g,m),t]);
+   m.p.r=m.r;m.p.c=m.c;
+   if(m.r==(m.p.p?8:0))g.win=m.p.p;
+  }else{
+   tr.push([skey(g),mkey(g,m),t]);
+   (m.t=='h'?g.hw:g.vw)[m.r][m.c]=true;
+  }
+  g.turn=1-t;ply++;
+ }
+ if(g.win==null)return null;
+ const dn=new Set(),deltas=[];
+ for(const[k,mk,pl]of tr){
+  if(dn.has(k+mk))continue;dn.add(k+mk);
+  deltas.push([k,mk,1,rewardFor(g,pl)]);
+ }
+ return{win:g.win,deltas};
+}
+let stopped=false;
+onmessage=e=>{
+ const msg=e.data;
+ if(msg.cmd=='stop'){stopped=true;return}
+ if(msg.cmd=='start'){
+  stopped=false;const total=msg.n,batchSize=Math.max(10,Math.min(100,Math.floor(total/10)));
+  let done=0,wins=[0,0],acc=[];
+  while(!stopped&&done<total){
+   const lim=Math.min(total,done+batchSize);
+   while(!stopped&&done<lim){
+    const r=runOne(msg.start);done++;
+    if(r){wins[r.win]++;for(const d of r.deltas)acc.push(d)}
+   }
+   postMessage({type:'progress',done,total,wins,deltas:acc,finished:stopped||done>=total});
+   acc=[];
+  }
+ }
+};
+`}
+
+function stopWorker(){if(worker){worker.postMessage({cmd:'stop'});worker.terminate();worker=null}}
+function applyDeltas(deltas){
+ const dn=new Set();
+ for(const[k,mk,nAdd,wAdd]of deltas){
+  if(dn.has(k+mk))continue;dn.add(k+mk);
+  let m=book.get(k);if(!m)book.set(k,m=new Map());
+  let e=m.get(mk);if(!e)m.set(mk,e=[0,0]);
+  e[0]+=nAdd;e[1]+=wAdd;
+ }
+ pruneWeakEntries();
+}
+function startTrain(n){if(train||mode!='play')return;
+ stopWorker();trN=n;train={n,i:0,w:[0,0]};render();
+ const blob=new Blob([buildWorkerCode()],{type:'application/javascript'});
+ const url=URL.createObjectURL(blob);
+ worker=new Worker(url);
+ setTimeout(()=>URL.revokeObjectURL(url),1000);
+ worker.onmessage=ev=>{
+  const d=ev.data;
+  if(d.type==='progress'){
+   train.i=d.done;train.w=d.wins.slice();
+   if(d.deltas&&d.deltas.length)applyDeltas(d.deltas);
+   if(d.finished){saveBook();stopWorker();train=null}
+   render();
+  }
+ };
+ worker.postMessage({cmd:'start',n,start:JSON.parse(start)})}
+function stopTrain(){stopWorker();if(train){saveBook();train=null;render()}}
+function resetBook(){stopWorker();train=null;book=new Map();try{localStorage.removeItem('qbook2')}catch(_){}if(db&&myId)db.doc('qbook/'+myId).delete().catch(()=>{});render()}
 
 function exportBookJson(){const payload={v:2,t:Date.now(),data:packBook(600000)};
  const blob=new Blob([JSON.stringify(payload,null,2)],{type:'application/json'});
@@ -370,12 +468,12 @@ async function importBookJsonFile(ev){const file=ev.target.files&&ev.target.file
   const mp=unpack(obj.data);mergeOwn(mp);saveBook();render()}catch(_){}
  ev.target.value=''}
 
-function trainUI(){const bn=[...book.values()].reduce((a,m)=>a+m.size,0);let h=`<div class="card"><b>AI自己対戦で学習</b> <span class="sub">（この配置から対戦・左右対称正規化あり）</span>
+function trainUI(){const bn=[...book.values()].reduce((a,m)=>a+m.size,0);let h=`<div class="card"><b>AI自己対戦で高速学習</b> <span class="sub">（Web Worker実行・左右対称正規化あり）</span>
  <div class="bar">`;
- if(train)h+=`${train.i}/${train.n}局 ${NM[0]}勝ち${train.w[0]}・${NM[1]}勝ち${train.w[1]} <button onclick="train.n=train.i">停止</button>`;
- else h+=`<select onchange="trN=+this.value">${[10,30,100].map(x=>`<option value="${x}" ${x==trN?'selected':''}>${x}局</option>`).join('')}</select> <button class="on" onclick="startTrain(trN)">学習実行</button> <button onclick="resetBook()">学習データ消去</button>`;
+ if(train)h+=`${train.i}/${train.n}局 ${NM[0]}勝ち${train.w[0]}・${NM[1]}勝ち${train.w[1]} <button onclick="stopTrain()">停止</button>`;
+ else h+=`<select onchange="trN=+this.value">${[50,200,500,1000].map(x=>`<option value="${x}" ${x==trN?'selected':''}>${x}局</option>`).join('')}</select> <button class="on" onclick="startTrain(trN)">高速学習実行</button> <button onclick="resetBook()">学習データ消去</button>`;
  h+=`</div><div class="bar"><button onclick="exportBookJson()">JSON書き出し</button><label><input type="file" accept=".json,application/json" style="display:none" onchange="importBookJsonFile(event)"><span style="display:inline-block;padding:6px 10px;border:1px solid var(--line);border-radius:8px;cursor:pointer">JSON読み込み</span></label></div>`;
- return h+`<div class="sub">記録：${book.size}局面／${bn}手。勝った側の残り壁優位も加味して評価します。</div>${shUI()}${driveUI()}</div>`}
+ return h+`<div class="sub">記録：${book.size}局面／${bn}手。バックグラウンドで計算するため画面操作を止めません。</div>${shUI()}${driveUI()}</div>`}
 
 const DW={...W};try{Object.assign(W,JSON.parse(localStorage.getItem('qw')||'{}'))}catch(_){}
 const saveW=()=>{try{localStorage.setItem('qw',JSON.stringify(W))}catch(_){}};
@@ -392,7 +490,7 @@ function mergeOwn(mp){let ch=false;for(const[k,m]of mp){let a=book.get(k);if(!a)
 function schedSync(){if(!db||syncT)return;syncT=setTimeout(()=>{syncT=null;syncUp()},3000)}
 async function syncUp(){if(!db||!myId)return;
  try{await db.doc('qbook/'+myId).set({v:2,t:Date.now(),data:packBook()});shInfo.t=Date.now();shInfo.err=''}
- catch(e){shInfo.err=e&&e.code=='not_granted'?'書き込み権限がありません（閲覧のみ）':(e&&e.message)||'同期に失敗しました'}render()}
+ catch(e){shInfo.err=e&&e.code=='not_granted'?'書き込み権限がありません':(e&&e.message)||'同期に失敗しました'}render()}
 function shUI(){if(!db)return`<div class="sub">共有：未接続（この端末のブラウザに保存し、JSONで端末間移動できます）</div>`;
  const n=[...shared.values()].reduce((a,m)=>a+m.size,0);
  return`<div class="sub">共有：${shInfo.state}／他の人のデータ ${shInfo.peers}人分・${n}手${shInfo.t?'／最終アップロード '+new Date(shInfo.t).toLocaleTimeString():''}${shInfo.err?' <span style="color:#d33">'+shInfo.err+'</span>':''}</div>
@@ -407,14 +505,14 @@ function shUI(){if(!db)return`<div class="sub">共有：未接続（この端末
   e=>{shInfo.state='読み込みエラー';shInfo.err=(e&&e.message)||'';render()})}catch(_){}})();
 
 let gd={mcp:null,msg:'',busy:false};
-const esc=t=>String(t).replace(/[&<>"]/g,c=>({'&':'&','<':'<','>':'>','"':'"'}[c]));
+const esc=t=>String(t).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const DRV='Google Drive';
 function mcpErr(e,write){const c=e&&e.code;if(c=='server_not_connected')return'Google Driveが接続されていません。';
  if(c=='needs_reauth')return'Google Driveの再認証が必要です。';
  if(c=='consent_required')return'このページからのGoogle Drive利用が許可されていません。';
  if(c=='not_in_manifest'||c=='blocked_by_policy')return'この環境ではGoogle Driveを利用できません。';
  if(c=='tool_error')return'Google Driveがエラーを返しました：'+((e&&e.message)||'');
- if((e&&e.retryable)||c=='server_unavailable'||c=='upstream_error'||c=='rate_limited')return'一時的に失敗しました。時間をおいて再試行してください。'+(write?'（保存済みの可能性があります）':'');
+ if((e&&e.retryable)||c=='server_unavailable'||c=='upstream_error'||c=='rate_limited')return'一時的に失敗しました。時間をおいて再試行してください。';
  return'失敗しました：'+((e&&e.message)||c||'不明なエラー')}
 async function driveExport(){if(!gd.mcp||gd.busy)return;gd.busy=true;gd.msg='書き出し中';render();
  const d=new Date(),p=n=>String(n).padStart(2,'0'),name=`quoridor_book_${d.getFullYear()}${p(d.getMonth()+1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}.json`;
